@@ -84,56 +84,56 @@ fi
 # Postprocess the SpeciesConc and LevelEdgeDiags files from GEOS-Chem
 #=======================================================================
 
-printf "Calling postproc_diags.py, FSS=$FirstSimSwitch\n"
-if "$FirstSimSwitch"; then
-    if [[ ! -d ${SpinupDir} ]]; then
-	printf "${SpinupDir} does not exist. Please fix SpinupDir or set FirstSimSwitch to False in run_inversion.sh.\n"
-	exit 1
-    fi
-    PrevDir=$SpinupDir
-else
-    PrevDir=$PosteriorRunDir
-    if [[ ! -d ${PosteriorRunDir} ]]; then
-	printf "${PosteriorRunDir} does not exist. Please fix PosteriorRunDir in run_inversion.sh.\n"
-	exit 1
-    fi
-fi
-printf "  - Hour 0 for ${StartDate} will be obtained from ${PrevDir}\n"
+# printf "Calling postproc_diags.py, FSS=$FirstSimSwitch\n"
+# if "$FirstSimSwitch"; then
+#     if [[ ! -d ${SpinupDir} ]]; then
+# 	printf "${SpinupDir} does not exist. Please fix SpinupDir or set FirstSimSwitch to False in run_inversion.sh.\n"
+# 	exit 1
+#     fi
+#     PrevDir=$SpinupDir
+# else
+#     PrevDir=$PosteriorRunDir
+#     if [[ ! -d ${PosteriorRunDir} ]]; then
+# 	printf "${PosteriorRunDir} does not exist. Please fix PosteriorRunDir in run_inversion.sh.\n"
+# 	exit 1
+#     fi
+# fi
+# printf "  - Hour 0 for ${StartDate} will be obtained from ${PrevDir}\n"
 
-if ! "$PrecomputedJacobian"; then
+# if ! "$PrecomputedJacobian"; then
 
-    # Postprocess all the Jacobian simulations
-    python postproc_diags.py $RunName $JacobianRunsDir $PrevDir $StartDate $Res; wait
+#     # Postprocess all the Jacobian simulations
+#     python postproc_diags.py $RunName $JacobianRunsDir $PrevDir $StartDate $Res; wait
 
-else
+# else
 
-    # Only postprocess the Prior simulation
-    python postproc_diags.py $RunName $PriorRunDir $PrevDir $StartDate $Res; wait
-    if "$LognormalErrors"; then
-        # for lognormal errors we need to postprocess the background run too
-        python postproc_diags.py $RunName $BackgroundRunDir $PrevDir $StartDate $Res; wait
-    fi
-fi
-printf "DONE -- postproc_diags.py\n\n"
+#     # Only postprocess the Prior simulation
+#     python postproc_diags.py $RunName $PriorRunDir $PrevDir $StartDate $Res; wait
+#     if "$LognormalErrors"; then
+#         # for lognormal errors we need to postprocess the background run too
+#         python postproc_diags.py $RunName $BackgroundRunDir $PrevDir $StartDate $Res; wait
+#     fi
+# fi
+# printf "DONE -- postproc_diags.py\n\n"
 
 #=======================================================================
 # Setup GC data directory in workdir
 #=======================================================================
 
-printf "Calling setup_gc_cache.py\n"
-if "$LognormalErrors"; then
-    # for lognormal errors we use the clean background run
-    GCsourcepth="${BackgroundRunDir}/OutputDir"
-    PriorOutputDir="${PriorRunDir}/OutputDir"
-    # also need the prior cache so that we can visualize the prior simulation
-    python setup_gc_cache.py $StartDate $EndDate $PriorOutputDir $GCVizDir; wait
-else
-    # for normal errors we use the prior run
-    GCsourcepth="${PriorRunDir}/OutputDir"
-fi
+# printf "Calling setup_gc_cache.py\n"
+# if "$LognormalErrors"; then
+#     # for lognormal errors we use the clean background run
+#     GCsourcepth="${BackgroundRunDir}/OutputDir"
+#     PriorOutputDir="${PriorRunDir}/OutputDir"
+#     # also need the prior cache so that we can visualize the prior simulation
+#     python setup_gc_cache.py $StartDate $EndDate $PriorOutputDir $GCVizDir; wait
+# else
+#     # for normal errors we use the prior run
+#     GCsourcepth="${PriorRunDir}/OutputDir"
+# fi
 
-python setup_gc_cache.py $StartDate $EndDate $GCsourcepth $GCDir; wait
-printf "DONE -- setup_gc_cache.py\n\n"
+# python setup_gc_cache.py $StartDate $EndDate $GCsourcepth $GCDir; wait
+# printf "DONE -- setup_gc_cache.py\n\n"
 
 #=======================================================================
 # Generate Jacobian matrix files 
@@ -153,7 +153,7 @@ else
 
 fi
 
-python jacobian.py ${invPath}/${configFile} $StartDate $EndDate $LonMinInvDomain $LonMaxInvDomain $LatMinInvDomain $LatMaxInvDomain $nElements $tropomiCache $BlendedTROPOMI $UseWaterObs $isPost $period_i $buildJacobian False; wait
+python jacobian.py ${invPath}/${configFile} 20231001 20231231 $LonMinInvDomain $LonMaxInvDomain $LatMinInvDomain $LatMaxInvDomain $nElements $tropomiCache $BlendedTROPOMI $UseWaterObs $isPost $period_i $buildJacobian False; wait
 if "$LognormalErrors"; then
     # for lognormal error visualization of the prior we sample the prior run
     # without constructing the jacobian matrix
@@ -164,29 +164,29 @@ printf " DONE -- jacobian.py\n\n"
 #=======================================================================
 # Do inversion
 #=======================================================================
-if "$LognormalErrors"; then
-    # for lognormal errors we merge our y, y_bkgd and partial K matrices
-    python merge_partial_k.py $JacobianDir $StateVectorFile ${OutputPath}/${RunName}/config_${RunName}.yml $PrecomputedJacobian
+# if "$LognormalErrors"; then
+#     # for lognormal errors we merge our y, y_bkgd and partial K matrices
+#     python merge_partial_k.py $JacobianDir $StateVectorFile ${OutputPath}/${RunName}/config_${RunName}.yml $PrecomputedJacobian
 
-    # then we run the inversion
-    printf "Calling lognormal_invert.py\n"
-    python lognormal_invert.py ${OutputPath}/${RunName}/config_${RunName}.yml $StateVectorFile $jacobian_sf
-    printf "DONE -- lognormal_invert.py\n\n"
-else
-    posteriorSF="./inversion_result.nc"
-    python_args=(invert.py ${OutputPath}/${RunName}/config_${RunName}.yml $nElements $JacobianDir $posteriorSF $LonMinInvDomain $LonMaxInvDomain $LatMinInvDomain $LatMaxInvDomain $Res $jacobian_sf)
+#     # then we run the inversion
+#     printf "Calling lognormal_invert.py\n"
+#     python lognormal_invert.py ${OutputPath}/${RunName}/config_${RunName}.yml $StateVectorFile $jacobian_sf
+#     printf "DONE -- lognormal_invert.py\n\n"
+# else
+#     posteriorSF="./inversion_result.nc"
+#     python_args=(invert.py ${OutputPath}/${RunName}/config_${RunName}.yml $nElements $JacobianDir $posteriorSF $LonMinInvDomain $LonMaxInvDomain $LatMinInvDomain $LatMaxInvDomain $Res $jacobian_sf)
     
-    printf "Calling invert.py\n"
-    python "${python_args[@]}"; wait
-    printf "DONE -- invert.py\n\n"
-    #=======================================================================
-    # Create gridded posterior scaling factor netcdf file
-    #=======================================================================
-    GriddedPosterior="./gridded_posterior.nc"
+#     printf "Calling invert.py\n"
+#     python "${python_args[@]}"; wait
+#     printf "DONE -- invert.py\n\n"
+#     #=======================================================================
+#     # Create gridded posterior scaling factor netcdf file
+#     #=======================================================================
+#     GriddedPosterior="./gridded_posterior.nc"
 
-    printf "Calling make_gridded_posterior.py\n"
-    python make_gridded_posterior.py $posteriorSF $StateVectorFile $GriddedPosterior; wait
-    printf "DONE -- make_gridded_posterior.py\n\n"
-fi
+#     printf "Calling make_gridded_posterior.py\n"
+#     python make_gridded_posterior.py $posteriorSF $StateVectorFile $GriddedPosterior; wait
+#     printf "DONE -- make_gridded_posterior.py\n\n"
+# fi
 
-exit 0
+# exit 0

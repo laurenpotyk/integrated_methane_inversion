@@ -1,8 +1,10 @@
 #!/bin/bash
 
 #SBATCH -N 1
-#SBATCH -c 1
-#SBATCH --mem=2000
+#SBATCH -c 8
+#SBATCH -p sapphire,huce_cascade,seas_compute,shared,huce_ice
+#SBATCH -t 0-10:00
+#SBATCH --mem=16000
 #SBATCH -o "imi_output.log"
 
 # This script will run the Integrated Methane Inversion (IMI) with GEOS-Chem.
@@ -43,6 +45,10 @@ if [[ $# == 1 ]]; then
 else
     ConfigFile="config.yml"
 fi
+
+echo "Using ConfigFile = ${ConfigFile}"
+pwd
+ls -l ${ConfigFile}
 
 # Get the conda environment name and source file
 # These variables are sourced manually because
@@ -173,8 +179,7 @@ if [[ -z "$DataPathTROPOMI" ]]; then
         -o imi_output.tmp \
         -W $downloadScript $StartDate $EndDate $tropomiCache
     wait
-    cat imi_output.tmp >>${InversionPath}/imi_output.log
-    rm imi_output.tmp
+
 else
     # use existing tropomi data and create a symlink to it
     if [[ ! -L $tropomiCache ]]; then

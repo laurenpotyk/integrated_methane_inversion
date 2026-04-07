@@ -203,5 +203,6 @@ if __name__ == "__main__":
 
         return 0
 
-    results = Parallel(n_jobs=-1)(delayed(process)(filename) for filename in sat_files)
+    results = Parallel(n_jobs=6)(delayed(process)(filename) for filename in sat_files)
+    # results = Parallel(n_jobs=4)(delayed(process)(filename) for filename in sat_files)
     print(f"Wrote files to {outputdir}")

@@ -135,12 +135,17 @@ def do_inversion(
         # Otherwise, grab the TROPOMI/GEOS-Chem data
         obs_GC = dat["obs_GC"]
 
-        # Only consider data within the new latitude and longitude bounds
+        # Only consider data within the new latitude and longitude bounds and within +/- 3 sigma (TROPOMI)
+        tropomi_low_bound = 1871.59
+        tropomi_high_bound = 1971.96
+        
         ind = np.where(
             (obs_GC[:, 2] >= xlim[0])
             & (obs_GC[:, 2] <= xlim[1])
             & (obs_GC[:, 3] >= ylim[0])
             & (obs_GC[:, 3] <= ylim[1])
+            & (obs_GC[:, 0] >= tropomi_low_bound)
+            & (obs_GC[:, 0] <= tropomi_high_bound)
         )[0]
 
         # Skip if no data in bounds

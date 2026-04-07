@@ -171,14 +171,14 @@ run_posterior() {
 
     fi
 
-    # Submit job to job scheduler
-    printf "\n=== SUBMITTING POSTERIOR SIMULATION ===\n"
-    sbatch --mem $RequestedMemory \
-        -c $RequestedCPUs \
-        -t $RequestedTime \
-        -p $SchedulerPartition \
-        -W ${RunName}_Posterior.run
-    wait
+    # # Submit job to job scheduler
+    # printf "\n=== SUBMITTING POSTERIOR SIMULATION ===\n"
+    # sbatch --mem $RequestedMemory \
+    #     -c $RequestedCPUs \
+    #     -t $RequestedTime \
+    #     -p $SchedulerPartition \
+    #     -W ${RunName}_Posterior.run
+    # wait
 
     # check if exited with non-zero exit code
     [ ! -f ".error_status_file.txt" ] || imi_failed $LINENO

@@ -137,10 +137,8 @@ def read_geoschem(date, gc_cache, n_elements, config, build_jacobian=False):
             concat_tracers(k, gc_date, config, v, n_elements)
             for k, v in pert_simulations_dict.items()
         ]
-
-        ds_all = [ds.load() for ds in ds_all]
-
         ds_sensi = xr.concat(ds_all, "element")
+        ds_sensi.load()
 
         sensitivities = ds_sensi["ch4"].values
         # Reshape so the data have dimensions (lon, lat, lev, grid_element)
@@ -151,7 +149,7 @@ def read_geoschem(date, gc_cache, n_elements, config, build_jacobian=False):
         ds_emis_base = concat_tracers(
             "0001", gc_date, config, [0], n_elements, baserun=True
         )
-
+        ds_emis_base.load()
         dat["emis_base_ch4"] = np.einsum("klji->ijlk", ds_emis_base["ch4"].values)
 
         # get OH base, run RunName_0000
@@ -160,7 +158,7 @@ def read_geoschem(date, gc_cache, n_elements, config, build_jacobian=False):
         ds_oh_base = concat_tracers(
             "0000", gc_date, config, [0], n_elements, baserun=True
         )
-
+        ds_oh_base.load()
         dat["oh_base_ch4"] = np.einsum("klji->ijlk", ds_oh_base["ch4"].values)
 
     return dat
@@ -175,7 +173,7 @@ def concat_tracers(run_id, gc_date, config, sv_elems, n_elements, baserun=False)
         run_id     [str]         : ID for Jacobian GEOS-Chem run, e.g. "0001"
         gc_date    [pd.Datetime] : date object, specifies Ymd_h
         config     [dict]        : dictionary of IMI config file
-        sv_elems   [list]        : list of state vector element tracers in this simulation
+        sv_elems   [list]        : list of state vector element tracers in this simulations
         n_elements [int]         : number of state vector elements in this inversion
         baserun    [bool]        : If True, only the base variable in the simulation will
                                  be opened, and the function will just return this one
@@ -197,41 +195,34 @@ def concat_tracers(run_id, gc_date, config, sv_elems, n_elements, baserun=False)
     )
     j_dir = f"{prefix}/{config['RunName']}_{run_id}/OutputDir"
     file_stub = gc_date.strftime("GEOSChem.SpeciesConc.%Y%m%d_0000z.nc4")
+    dsmf = xr.open_dataset("/".join([j_dir, file_stub]), chunks="auto")
+    keepvars = [f"SpeciesConcVV_CH4_{i:04}" for i in sv_elems]
+    is_Regional = config["isRegional"]
 
-    with xr.open_dataset("/".join([j_dir, file_stub]), chunks="auto") as dsmf:
-        try:
-            dsmf = dsmf.isel(time=gc_date.hour, drop=True)  # subset hour of interest
-        except Exception as e:
-            print(f"Run id {run_id}. Failed at {gc_date} with error: {e}", flush=True)
-            raise e
+    if len(keepvars) == 1:
 
-        keepvars = [f"SpeciesConcVV_CH4_{i:04}" for i in sv_elems]
-        is_Regional = config["isRegional"]
+        is_OH_element = check_is_OH_element(
+            sv_elems[0], n_elements, config["OptimizeOH"], is_Regional
+        )
+        is_BC_element = check_is_BC_element(
+            sv_elems[0],
+            n_elements,
+            config["OptimizeOH"],
+            config["OptimizeBCs"],
+            is_OH_element,
+            is_Regional,
+        )
 
-        if len(keepvars) == 1:
-
-            is_OH_element = check_is_OH_element(
-                sv_elems[0], n_elements, config["OptimizeOH"], is_Regional
-            )
-            is_BC_element = check_is_BC_element(
-                sv_elems[0],
-                n_elements,
-                config["OptimizeOH"],
-                config["OptimizeBCs"],
-                is_OH_element,
-                is_Regional,
-            )
-
-            # for BC and OH elems, no number in var name
-            if is_OH_element or is_BC_element:
-                keepvars = ["SpeciesConcVV_CH4"]
-
-        if baserun:
+        # for BC and OH elems, no number in var name
+        if is_OH_element or is_BC_element:
             keepvars = ["SpeciesConcVV_CH4"]
 
-        ds_concat = xr.concat([dsmf[v] for v in keepvars], "element").rename("ch4")
-        ds_concat = ds_concat.to_dataset().assign_attrs(dsmf.attrs)
-        
+    if baserun:
+        keepvars = ["SpeciesConcVV_CH4"]
+
+    ds_concat = xr.concat([dsmf[v] for v in keepvars], "element").rename("ch4")
+    ds_concat = ds_concat.to_dataset().assign_attrs(dsmf.attrs)
+    ds_concat = ds_concat.isel(time=gc_date.hour, drop=True)  # subset hour of interest
     if not baserun:
         ds_concat = ds_concat.assign_coords({"element": sv_elems})
     return ds_concat
@@ -271,6 +262,9 @@ def get_gridcell_list(lons, lats):
                     "lon_sat": [],
                     "observation_count": 0,
                     "observation_weights": [],
+                    "surface_classification": [],
+                    "altitude": [],
+                    "albedo": []
                 }
             )
     gridcells = np.array(gridcells).reshape(len(lons), len(lats))
@@ -370,7 +364,7 @@ def merge_pressure_grids(p_sat, p_gc):
     return merged
 
 
-def remap(gc_CH4, data_type, p_merge, edge_index, first_gc_edge):
+def remap(gc_CH4, data_type, p_merge, edge_index, first_gc_edge, GOSAT=False):
     """
     Remap GEOS-Chem methane to the TROPOMI vertical grid.
 
@@ -394,13 +388,18 @@ def remap(gc_CH4, data_type, p_merge, edge_index, first_gc_edge):
     for i in range(first_gc_edge, len(p_merge) - 1):
         CH4[i] = gc_CH4[k]
         if data_type[i + 1] == 2:
-            k = k + 1
+            if k < 46:
+                k = k + 1
     if first_gc_edge > 0:
         CH4[:first_gc_edge] = CH4[first_gc_edge]
 
     # Calculate the pressure-weighted mean methane for each TROPOMI layer
     delta_p = p_merge[:-1] - p_merge[1:]
-    sat_CH4 = np.zeros(12)
+    if GOSAT:
+        n_layers = 20
+    else:
+        n_layers = 12
+    sat_CH4 = np.zeros(n_layers)
     sat_CH4.fill(np.nan)
     for i in range(len(edge_index) - 1):
         start = edge_index[i]
@@ -414,7 +413,7 @@ def remap(gc_CH4, data_type, p_merge, edge_index, first_gc_edge):
     return sat_CH4
 
 
-def remap_sensitivities(sensi_lonlat, data_type, p_merge, edge_index, first_gc_edge):
+def remap_sensitivities(sensi_lonlat, data_type, p_merge, edge_index, first_gc_edge, GOSAT=False):
     """
     Remap GEOS-Chem sensitivity data (from perturbation simulations) to the TROPOMI vertical grid.
 
@@ -437,14 +436,19 @@ def remap_sensitivities(sensi_lonlat, data_type, p_merge, edge_index, first_gc_e
     for i in range(first_gc_edge, len(p_merge) - 1):
         deltaCH4[i, :] = sensi_lonlat[k, :]
         if data_type[i + 1] == 2:
-            k = k + 1
+            if k < 46:
+                k = k + 1
     if first_gc_edge > 0:
         deltaCH4[:first_gc_edge, :] = deltaCH4[first_gc_edge, :]
 
     # Calculate the weighted mean DeltaCH4 for each layer, for all perturbed state vector elements
     delta_p = p_merge[:-1] - p_merge[1:]
     delta_ps = np.transpose(np.tile(delta_p, (n_elem, 1)))
-    sat_deltaCH4 = np.zeros((12, n_elem))
+    if GOSAT:
+        n_layers = 20
+    else:
+        n_layers = 12
+    sat_deltaCH4 = np.zeros((n_layers, n_elem))
     sat_deltaCH4.fill(np.nan)
     for i in range(len(edge_index) - 1):
         start = edge_index[i]
@@ -469,3 +473,327 @@ def nearest_loc(query_location, reference_grid, tolerance=0.5):
         return np.nan
     else:
         return ind
+    
+    
+class VerticalGrid:
+    """
+    Can be used independently to interpolate, or used inside functions
+    in operators.py.
+
+    model_conc_at_layers: nobs x n_model_edges-1,
+                          units: concentration-type (ppb, vmr, etc.)
+    satellite_edges:      nobs x n_satellite_edges
+                       units: pressure
+    model_edges:       nobs x n_model_edges
+                       units: pressure
+    """
+
+    def __init__(
+        self,
+        model_conc_at_layers,
+        model_edges,
+        satellite_edges,
+        interpolate_to_centers_or_edges,
+    ):
+        self.model_conc_at_layers = model_conc_at_layers
+        self.model_edges = model_edges
+        self.satellite_edges = satellite_edges
+        self.interpolate_to_centers_or_edges = interpolate_to_centers_or_edges
+
+        self.__expand_profile_dims()
+        self.__check_input_structure()
+
+        self.n_obs = self.model_conc_at_layers.shape[0]
+        self.n_satellite_edges = self.satellite_edges.shape[1]
+        self.n_model_edges = self.model_edges.shape[1]
+
+    def __expand_profile_dims(self):
+        """
+        If profiles have only one observation,
+        expand to a 2D array with dims (n_obs x n_model_edges) where n_obs=1.
+        """
+        if self.model_conc_at_layers.ndim == 1:
+            self.model_conc_at_layers = np.expand_dims(
+                self.model_conc_at_layers, axis=0
+            )
+        if self.model_edges.ndim == 1:
+            self.model_edges = np.expand_dims(self.model_edges, axis=0)
+        if self.satellite_edges.ndim == 1:
+            self.satellite_edges = np.expand_dims(self.satellite_edges, axis=0)
+
+    def __check_input_structure(self):
+        assert (
+            self.model_conc_at_layers.ndim == 2
+        ), "GEOS-Chem methane layers must be 2D (nobs x nlevels), or 1D (nlevels)."
+        assert (
+            self.model_edges.ndim == 2
+        ), "GEOS-Chem pressure edges must be 2D (nobs x nlevels), or 1D (nlevels)."
+        assert (
+            self.satellite_edges.ndim == 2
+        ), "Satellite pressure edges must be 2D (nobs x nlevels), or 1D (nlevels)."
+
+        assert np.all(
+            np.diff(self.model_edges) < 0
+        ), "GEOS-Chem pressure levels must be in descending order."
+        assert np.all(
+            np.diff(self.satellite_edges) < 0
+        ), "Satellite pressure levels must be in descending order."
+
+        assert (
+            self.model_edges.shape[0]
+            == self.satellite_edges.shape[0]
+            == self.model_conc_at_layers.shape[0]
+        ), (
+            f"GEOS-Chem and satellite must have the same number of observations. "
+            f"model_ch4_layers nobs = {self.model_conc_at_layers.shape[0]} "
+            f"model_edges nobs = {self.model_edges.shape[0]} "
+            f"satellite_edges nobs = {self.satellite_edges.shape[0]} "
+        )
+        assert self.model_conc_at_layers.shape[1] + 1 == self.model_edges.shape[1], (
+            "GEOS-Chem has mismatched vertical coordinates. "
+            "model_ch4_layers should have one less vertical coordinate than model_edges."
+        )
+
+    def expand_model_to_satellite_range(self):
+        """
+        We want to account for the case when the GEOS-Chem surface
+        is above the satellite surface (altitude wise) or the GEOS-Chem
+        top is below the satellite top. We do this by adjusting the
+        GEOS-Chem surface pressure up to the satellite surface pressure
+        """
+        idx_bottom = np.less(self.model_edges[:, 0], self.satellite_edges[:, 0])
+        idx_top = np.greater(self.model_edges[:, -1], self.satellite_edges[:, -1])
+
+        expanded_model_edges = self.model_edges.copy()
+        expanded_model_edges[idx_bottom, 0] = self.model_edges[idx_bottom, 0]
+        expanded_model_edges[idx_top, -1] = self.model_edges[idx_top, -1]
+        return expanded_model_edges
+
+    @staticmethod
+    def get_interpolation_map(model_edges, satellite_edges):
+        """
+        Gets an interpolation map which converts from
+        GEOS-Chem concentrations at pressure centers to satellite partial columns.
+
+        interpolation_map is equivalent to W * M_in in Keppens et al. (2019) eq. 14,
+        and has dimension (nobs x ngc x nsat)
+        """
+
+        # Define matrices with "low" and "high" pressure values for each layer.
+        # shape: nobs x n_model_levels - 1 x n_satellite_levels - 1
+        model_low = model_edges[:, 1:][:, :, None]
+        model_high = model_edges[:, :-1][:, :, None]
+
+        satellite_low = satellite_edges[:, 1:][:, None, :]
+        satellite_high = satellite_edges[:, :-1][:, None, :]
+
+        interpolation_map = np.minimum(satellite_high, model_high) - np.maximum(
+            satellite_low, model_low
+        )
+        layers_do_not_intersect = ~(
+            np.less_equal(satellite_low, model_high)
+            & np.greater_equal(satellite_high, model_low)
+        )
+        interpolation_map[layers_do_not_intersect] = 0
+
+        return interpolation_map
+
+    def get_hprime_satellite_edges(self):
+        """
+        Equivalent to hprime in equation 11 of of Keppens et al. (2019).
+
+        Creates n_satellite_edges+1 hprime levels with n_satellite_edges layers.
+
+        We interpolate to these layers instead of the actual layers, which ensures we
+        have full rank when we invert to satellite edges.
+        """
+        hprime_edges = np.full((self.n_obs, self.n_satellite_edges + 1), 0.0)
+        hprime_edges[:, 1:-1] = 0.5 * (
+            self.satellite_edges[:, :-1] + self.satellite_edges[:, 1:]
+        )
+        hprime_edges[:, 0] = self.satellite_edges[:, 0]
+        hprime_edges[:, -1] = self.satellite_edges[:, -1]
+        return hprime_edges
+
+    def interpolate(self):
+        """
+        Interpolate GEOS-Chem methane to satellite edges OR centers.
+        """
+        expanded_model_edges = self.expand_model_to_satellite_range()
+
+        if self.interpolate_to_centers_or_edges == "centers":
+            interpolation_map = self.get_interpolation_map(
+                model_edges=expanded_model_edges, satellite_edges=self.satellite_edges
+            )
+            partial_column_to_conc = 1 / np.abs(np.diff(self.satellite_edges))  # M_out*
+
+        elif self.interpolate_to_centers_or_edges == "edges":
+            hprime_satellite_edges = self.get_hprime_satellite_edges()
+            interpolation_map = self.get_interpolation_map(
+                model_edges=expanded_model_edges, satellite_edges=hprime_satellite_edges
+            )  # interpolates model to hprime satellite layers
+            partial_column_to_conc = 1 / np.abs(
+                np.diff(hprime_satellite_edges)
+            )  # M_out*
+
+        else:
+            raise ValueError(
+                f"interpolate_to_centers_or_edges must be 'centers' or 'edges', not {self.interpolate_to_centers_or_edges}"
+            )
+
+        satellite_partial_columns = (
+            interpolation_map * self.model_conc_at_layers[:, :, None]
+        ).sum(
+            axis=1
+        )  # matrix multiplication across nobs model concentration vectors
+        satellite_conc = partial_column_to_conc * satellite_partial_columns
+
+        return satellite_conc
+    
+class VerticalGridJacobian:
+    """
+    Can be used independently to interpolate, or used inside functions
+    in operators.py.
+
+    model_conc_at_layers: nobs x n_model_edges-1,
+                          units: concentration-type (ppb, vmr, etc.)
+    satellite_edges:      nobs x n_satellite_edges
+                       units: pressure
+    model_edges:       nobs x n_model_edges
+                       units: pressure
+    """
+
+    def __init__(
+        self,
+        model_edges,
+        satellite_edges,
+        interpolate_to_centers_or_edges,
+        n_obs,
+        sat_avker,
+        sat_pressure_weight,
+    ):
+        self.model_edges = model_edges
+        self.satellite_edges = satellite_edges
+        self.interpolate_to_centers_or_edges = interpolate_to_centers_or_edges
+        self.n_obs = n_obs
+
+        self.__expand_profile_dims()
+        self.__check_input_structure()
+        
+        self.n_satellite_edges = self.satellite_edges.shape[1]
+        self.n_model_edges = self.model_edges.shape[1]
+        
+        self.expanded_model_edges = self.expand_model_to_satellite_range()
+
+        self.hprime_satellite_edges = self.get_hprime_satellite_edges()
+        self.interpolation_map = self.get_interpolation_map(
+            model_edges=self.expanded_model_edges, satellite_edges=self.hprime_satellite_edges
+        )  # interpolates model to hprime satellite layers
+        self.partial_column_to_conc = 1 / np.abs(
+            np.diff(self.hprime_satellite_edges)
+        )
+        
+        self.sat_avker = sat_avker
+        self.sat_pressure_weight = sat_pressure_weight
+
+    def __expand_profile_dims(self):
+        """
+        If profiles have only one observation,
+        expand to a 2D array with dims (n_obs x n_model_edges) where n_obs=1.
+        """
+        if self.model_edges.ndim == 1:
+            self.model_edges = np.expand_dims(self.model_edges, axis=0)
+        if self.satellite_edges.ndim == 1:
+            self.satellite_edges = np.expand_dims(self.satellite_edges, axis=0)
+
+    def __check_input_structure(self):
+        assert (
+            self.model_edges.ndim == 2
+        ), "GEOS-Chem pressure edges must be 2D (nobs x nlevels), or 1D (nlevels)."
+        assert (
+            self.satellite_edges.ndim == 2
+        ), "Satellite pressure edges must be 2D (nobs x nlevels), or 1D (nlevels)."
+
+        assert np.all(
+            np.diff(self.model_edges) < 0
+        ), "GEOS-Chem pressure levels must be in descending order."
+        assert np.all(
+            np.diff(self.satellite_edges) < 0
+        ), "Satellite pressure levels must be in descending order."
+
+    def expand_model_to_satellite_range(self):
+        """
+        We want to account for the case when the GEOS-Chem surface
+        is above the satellite surface (altitude wise) or the GEOS-Chem
+        top is below the satellite top. We do this by adjusting the
+        GEOS-Chem surface pressure up to the satellite surface pressure
+        """
+        idx_bottom = np.less(self.model_edges[:, 0], self.satellite_edges[:, 0])
+        idx_top = np.greater(self.model_edges[:, -1], self.satellite_edges[:, -1])
+
+        expanded_model_edges = self.model_edges.copy()
+        expanded_model_edges[idx_bottom, 0] = self.model_edges[idx_bottom, 0]
+        expanded_model_edges[idx_top, -1] = self.model_edges[idx_top, -1]
+        return expanded_model_edges
+
+    @staticmethod
+    def get_interpolation_map(model_edges, satellite_edges):
+        """
+        Gets an interpolation map which converts from
+        GEOS-Chem concentrations at pressure centers to satellite partial columns.
+
+        interpolation_map is equivalent to W * M_in in Keppens et al. (2019) eq. 14,
+        and has dimension (nobs x ngc x nsat)
+        """
+
+        # Define matrices with "low" and "high" pressure values for each layer.
+        # shape: nobs x n_model_levels - 1 x n_satellite_levels - 1
+        model_low = model_edges[:, 1:][:, :, None]
+        model_high = model_edges[:, :-1][:, :, None]
+
+        satellite_low = satellite_edges[:, 1:][:, None, :]
+        satellite_high = satellite_edges[:, :-1][:, None, :]
+
+        interpolation_map = np.minimum(satellite_high, model_high) - np.maximum(
+            satellite_low, model_low
+        )
+        layers_do_not_intersect = ~(
+            np.less_equal(satellite_low, model_high)
+            & np.greater_equal(satellite_high, model_low)
+        )
+        interpolation_map[layers_do_not_intersect] = 0
+
+        return interpolation_map
+
+    def get_hprime_satellite_edges(self):
+        """
+        Equivalent to hprime in equation 11 of of Keppens et al. (2019).
+
+        Creates n_satellite_edges+1 hprime levels with n_satellite_edges layers.
+
+        We interpolate to these layers instead of the actual layers, which ensures we
+        have full rank when we invert to satellite edges.
+        """
+        hprime_edges = np.full((self.n_obs, self.n_satellite_edges + 1), 0.0)
+        hprime_edges[:, 1:-1] = 0.5 * (
+            self.satellite_edges[:, :-1] + self.satellite_edges[:, 1:]
+        )
+        hprime_edges[:, 0] = self.satellite_edges[:, 0]
+        hprime_edges[:, -1] = self.satellite_edges[:, -1]
+        return hprime_edges
+
+    def interpolate_sensitivities(self, model_conc_at_layers):
+        """
+        Interpolate GEOS-Chem methane to satellite edges OR centers.
+        """
+        # Expand dimension if only one observation
+        if model_conc_at_layers.ndim == 1:
+            model_conc_at_layers = np.expand_dims(model_conc_at_layers, axis=0)
+            
+        satellite_partial_columns = (self.interpolation_map * model_conc_at_layers[:, :, None]).sum(axis=1)  # matrix multiplication across nobs model concentration vectors
+        model_on_sat_levels = (self.partial_column_to_conc * satellite_partial_columns) * 1e9
+        
+#         with open("debug.txt", 'w') as f:
+#             f.write(f"{type(self.sat_avker), type(model_on_sat_levels), type(self.sat_pressure_weight)} {np.shape(self.sat_avker)} {np.shape(model_on_sat_levels)} {np.shape(self.sat_pressure_weight)}\n")
+            
+        return np.sum(self.sat_avker*model_on_sat_levels*self.sat_pressure_weight, axis=1)
