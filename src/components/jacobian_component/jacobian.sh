@@ -636,6 +636,7 @@ cd \${RUNDIR}" jacobian_runs/run_jacobian_simulations.sh
             rm imi_output.tmp
         else
             submit_job $SchedulerType true $RequestedMemory $RequestedCPUs $RequestedTime $SchedulerPartition run_prior_simulation.sh
+            :
         fi
 
         # check if prior simulation exited with non-zero exit code

@@ -340,6 +340,7 @@ def plot_field(
         clean_title: title without special characters
     """
     field = field.squeeze()
+    
     # Select map features
     if is_regional:
         oceans_50m = cartopy.feature.NaturalEarthFeature("physical", "ocean", "50m")
@@ -683,7 +684,7 @@ def filter_tropomi(tropomi_data, xlim, ylim, startdate, enddate, use_water_obs=F
         & (tropomi_data["time"] >= startdate)
         & (tropomi_data["time"] <= enddate)
         & (tropomi_data["qa_value"] >= 0.5)
-        & (tropomi_data["longitude_bounds"].ptp(axis=2) < 100)
+        & (np.ptp(tropomi_data["longitude_bounds"], axis=2) < 100)
         & ~(
             tropomi_data["surface_classification_0xF9"] == 184
         )  # exclude land_snow_or_ice
@@ -716,7 +717,7 @@ def filter_blended(blended_data, xlim, ylim, startdate, enddate, use_water_obs=F
         & (blended_data["latitude"] < ylim[1])
         & (blended_data["time"] >= startdate)
         & (blended_data["time"] <= enddate)
-        & (blended_data["longitude_bounds"].ptp(axis=2) < 100)
+        & (np.ptp(blended_data["longitude_bounds"], axis=2) < 100)
         & ~(
             (blended_data["surface_classification"] == 3)
             | (

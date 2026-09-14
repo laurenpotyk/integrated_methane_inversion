@@ -1,9 +1,10 @@
 #!/bin/bash
 
 #SBATCH -N 1
-#SBATCH -c 1
-#SBATCH --mem=2000
-#SBATCH --mail-type=END
+#SBATCH -c 8
+#SBATCH -p sapphire,huce_cascade,seas_compute,shared,huce_ice
+#SBATCH -t 0-10:00
+#SBATCH --mem=16000
 #SBATCH -o "imi_output.log"
 
 ## Uncomment to use PBS
@@ -173,7 +174,7 @@ if [[ -z "$DataPathObs" ]]; then
     else
         printf "$SatelliteProduct is not currently supported for download"
     fi
-    submit_job $SchedulerType true $RequestedMemory $RequestedCPUs $RequestedTime $downloadScript $StartDate $EndDate $satelliteCache
+    submit_job $SchedulerType true $RequestedMemory $RequestedCPUs $RequestedTime $SchedulerPartition $downloadScript $StartDate $EndDate $satelliteCache
 else
     # use existing tropomi data and create a symlink to it
     if [[ ! -L $satelliteCache ]]; then
